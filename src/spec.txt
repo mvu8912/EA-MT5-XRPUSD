@@ -1,0 +1,199 @@
+Software Requirement Specification (SRS) for MoneyMonster Expert Advisor (EA) on MetaTrader 5 for XRPUSD
+Last Updated: April 19, 2025
+
+1. Introduction
+Name: MoneyMonster
+This Software Requirement Specification (SRS) details the requirements for an Expert Advisor (EA) developed for scalp trading the XRPUSD (XRP/USD) pair on the MetaTrader 5 (MT5) platform. The EA leverages a multi-timeframe strategy, utilizing the 1-minute (1M) chart for precise trade entries, the 5-minute (5M) chart for signal generation, and the 15-minute (15M) chart for trend confirmation. It automates trade execution, position management, and risk control, providing a robust tool for traders aiming to capitalize on short-term price movements in XRPUSD.
+
+2. Scope
+The EA is designed to:
+* Analyze real-time XRPUSD price data across multiple timeframes (1M, 5M, 15M).
+* Generate trading signals using technical indicators.
+* Execute and manage trades with a multi-TP system and dynamic SL adjustments.
+* Implement advanced risk management and performance tracking features.
+* Provide comprehensive visual feedback on trade status and performance metrics.
+This SRS defines the full functionality required to meet these objectives, ensuring the EA operates efficiently within the MT5 environment.
+
+3. Functional Requirements
+3.1 Data Access and Timeframes
+* Description: The EA accesses real-time XRPUSD tick and candlestick data via MT5.
+* Details:
+    * Timeframes: 1-minute (1M), 5-minute (5M), and 15-minute (15M) charts.
+    * Data is retrieved directly from the MT5 terminal for analysis and trade decisions.
+
+3.2 Technical Indicators
+* Description: The EA supports a range of technical indicators to generate signals and confirm trends.
+* Details:
+    * Supported indicators: Moving Averages (MA), Relative Strength Index (RSI), Moving Average Convergence Divergence (MACD), Bollinger Bands, Average Directional Index (ADX), and Average True Range (ATR).
+    * Users can customize indicator parameters (e.g., periods, levels) through MT5 input settings.
+    * Each indicator can be enabled/disabled individually to fine-tune the strategy.
+    * The EA validates indicator initialization at startup and gracefully handles missing indicators.
+
+3.3 Signal Generation and Trend Confirmation
+* Description: Trading signals are generated and validated across multiple timeframes.
+* Details:
+    * Signal Generation (5M): Signals are detected on the 5M chart using indicators (e.g., MA crossover, RSI overbought/oversold levels).
+    * Trend Confirmation (15M): The 15M chart confirms the market trend using indicators such as MA direction or ADX strength.
+
+3.4 Trade Entry
+* Description: Trades are executed on the 1M chart based on validated signals.
+* Details:
+    * Entry occurs when a 5M signal aligns with the 15M trend, and a specific condition is met on the 1M chart (e.g., a price action trigger like a candlestick pattern or breakout).
+    * Trade entry logic is fully documented in the code with detailed comments.
+    * Position size is dynamically calculated based on risk parameters and market volatility.
+
+3.5 Multi-TP System
+* Description: The EA implements a multi-take-profit system with four levels (TP1, TP2, TP3, TP4) to manage winning trades.
+* Details:
+    * TP levels are user-defined, either as pips from the entry price or as specific price levels.
+    * Trade management at each TP level:
+        * TP1 Hit:
+            * Closes 40% of the position.
+            * Moves the stop-loss (SL) to the entry price.
+        * TP2 Hit:
+            * Closes 20% of the position.
+            * Moves the SL to the TP1 level.
+        * TP3 Hit:
+            * Closes 20% of the position.
+            * Moves the SL to the TP2 level.
+        * Midway to TP4:
+            * When the price reaches the midpoint between TP3 and TP4 (calculated as the average of TP3 and TP4 prices), moves the SL to the TP3 level.
+        * TP4 Hit:
+            * Closes the remaining 20% of the position.
+    * Example (for a long position):
+        * Entry: 1910
+        * TP1: 1915 (40% closed, SL → 1910)
+        * TP2: 1920 (20% closed, SL → 1915)
+        * TP3: 1925 (20% closed, SL → 1920)
+        * Midway (1927.5): SL → 1925
+        * TP4: 1930 (remaining 20% closed)
+
+3.6 Dynamic SL for Losing Trades
+* Description: When a trade is in a losing position, the SL is dynamically adjusted to minimize losses.
+* Details:
+    * Applies when the price is between the entry price and the original SL (i.e., the trade is in loss but hasn't hit the original SL).
+    * Adjustment Logic:
+        * For long positions: SL = max(original SL, min(entry, current price - distance))
+        * For short positions: SL = min(original SL, max(entry, current price + distance))
+    * Distance: User-defined (e.g., 5-10 pips) or calculated dynamically (e.g., based on ATR).
+    * Behavior: The SL follows the current price, maintaining the specified distance, but is constrained between the original SL and entry price.
+    * Termination: This adjustment ceases once TP1 is hit and the SL is moved to the entry price.
+    * Example (for a long position):
+        * Entry: 1910, Original SL: 1900, Distance: 5 pips
+        * Price at 1905: SL = max(1900, min(1910, 1905 - 5)) = max(1900, 1900) = 1900
+        * Price at 1908: SL = max(1900, min(1910, 1908 - 5)) = max(1900, 1903) = 1903
+        * Price at 1906: SL = max(1900, min(1910, 1906 - 5)) = max(1900, 1901) = 1901
+
+3.7 Trailing Stop Functionality
+* Description: The EA implements a comprehensive trailing stop mechanism to secure profits.
+* Details:
+    * Trailing Stop Parameters:
+        * Trailing_Start: Minimum price movement in pips from entry before trailing begins.
+        * Trailing_Step: Minimum price movement in pips required to adjust the SL.
+        * Trailing_Distance: Distance in pips to maintain between current price and SL.
+    * Implementation:
+        * For buy positions: SL moves up when price advances significantly, maintaining trailing distance.
+        * For sell positions: SL moves down when price declines significantly, maintaining trailing distance.
+        * The trailing stop only moves in the favorable direction (never worsens the SL).
+    * User Configuration: All trailing stop parameters are customizable via input settings.
+
+3.8 Gap Protection
+* Description: The EA includes protection against market gaps to minimize losses during volatile price movements.
+* Details:
+    * Continuously monitors for significant price gaps between consecutive candles.
+    * When a gap exceeds the user-defined threshold (Max_Gap_Size):
+        * If the gap is against the position: Reduces position size by 50% or closes entirely for extremely large gaps.
+        * Logs warnings about detected gaps and actions taken.
+    * Parameters are fully customizable through input settings.
+
+3.9 Position Sizing and Risk Management
+* Description: The EA calculates position sizes and enforces risk limits.
+* Details:
+    * Position Size: Based on a user-defined risk percentage (e.g., 1-2% of account balance).
+    * Volatility-Adjusted Risk:
+        * Uses ATR to assess current market volatility.
+        * Adjusts position size based on volatility ratio (current ATR vs. base stop loss).
+        * Risk factor can be customized to increase/decrease sensitivity to volatility.
+    * Daily Loss Limit: Trading stops if losses exceed a user-specified threshold (e.g., 5% of account balance).
+
+3.10 Automation
+* Description: The EA fully automates trading operations.
+* Details:
+    * Executes trades, manages partial closures, and adjusts SL according to the multi-TP and dynamic SL rules.
+    * Operates without manual intervention once configured.
+    * Implements error handling and recovery mechanisms for robustness.
+
+3.11 Visualization and User Interface
+* Description: The EA provides comprehensive visual feedback on trading activity and performance.
+* Details:
+    * Information Panel:
+        * Displays account statistics (balance, equity, profit/loss, daily loss).
+        * Shows current open positions and their status.
+        * Lists active indicators and their status.
+        * User-configurable appearance (corner position, colors, font size).
+    * Advanced Dashboard:
+        * Provides detailed performance metrics (win rate, profit factor, expectancy).
+        * Shows real-time indicator values and their interpretation.
+        * Displays trade statistics with visual enhancements.
+    * Trade Lines:
+        * Visualizes entry points, SL levels, and all TP targets on the chart.
+        * Color-coded for easy identification (buy/sell, SL/TP).
+        * Indicates which TP levels have been hit with checkmarks.
+    * All visualization elements are fully customizable and can be enabled/disabled.
+
+3.12 Enhanced Logging System
+* Description: The EA implements a multi-level logging system for troubleshooting and monitoring.
+* Details:
+    * Log Levels:
+        * Critical (1): Major errors and important alerts.
+        * Important (2): Standard operational information.
+        * Debug (3): Detailed diagnostic information.
+    * Debug Mode: Enables/disables verbose logging for development and troubleshooting.
+    * Format: Timestamp + level indicator + message content.
+    * Critical messages trigger MT5 alerts for immediate attention.
+
+3.13 Backtesting and Performance Tracking
+* Description: The EA supports backtesting and provides performance insights.
+* Details:
+    * Compatible with MT5's Strategy Tester, simulating slippage and variable spreads.
+    * Outputs metrics: profit/loss, win rate, maximum drawdown, and equity curve.
+    * Logs detailed trade information in the MT5 journal for review.
+    * Specialized tester functions for initialization and finalization during backtesting.
+
+4. Non-Functional Requirements
+* Performance:
+    * Processes data and executes trades efficiently with minimal latency.
+    * Optimized code avoids unnecessary calculations in the main tick processing loop.
+* Reliability:
+    * Handles errors (e.g., connection loss, invalid inputs) gracefully with appropriate logging.
+    * Implements data validation to prevent erroneous trade decisions.
+* Usability:
+    * Offers a user-friendly interface via MT5 input parameters for configuration.
+    * Provides clear visual feedback on EA status and performance.
+* Compatibility:
+    * Functions with any MT5 broker providing XRPUSD trading.
+    * Properly handles different digit formats and point values across brokers.
+
+5. Constraints
+* Must comply with MT5's trading rules (e.g., position management, order types).
+* Performance is contingent on the user's hardware, internet connection, and MT5 setup.
+* Visualization components may require sufficient screen space for optimal display.
+
+6. Assumptions
+* Users have basic knowledge of scalp trading, technical analysis, and MT5 usage.
+* The EA is optimized for XRPUSD, though it may be adaptable to other instruments with modifications.
+* MT5 platform has sufficient access to historical data for indicator calculations.
+
+7. Dependencies
+* Relies on MT5 for market data, trade execution, and backtesting capabilities.
+* Utilizes MQL5 standard libraries for indicator calculations and trade functions.
+* Requires proper broker support for XRPUSD trading.
+
+8. Future Enhancements
+* Expand support to additional trading instruments (e.g., forex pairs, commodities).
+* Integrate machine learning or AI for enhanced signal generation or risk management.
+* Implement advanced notification systems (email, push, telegram) for trade alerts.
+* Add customizable trading sessions to focus on specific market hours.
+
+This SRS provides a comprehensive blueprint for the MoneyMonster EA, detailing all implemented features including the multi-TP system, dynamic SL mechanisms, gap protection, volatility-based risk adjustment, and enhanced visualization components. It ensures the EA meets the needs of traders seeking automated, risk-controlled scalping on XRPUSD within MT5.
+

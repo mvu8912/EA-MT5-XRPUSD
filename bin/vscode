@@ -1,0 +1,2 @@
+#!/bin/sh
+exec docker compose exec vscode code --no-sandbox --user-data-dir=/home/mv

@@ -1,0 +1,19 @@
+services:
+  vscode:
+    build: .
+    image: vscode-novnc
+    environment:
+      VNC_PASSWORD: mypassword
+      RESOLUTION: 1920x1080
+      USER: mv
+      PASSWORD: mypassword
+    ports:
+    - 5900:5900
+    volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+    - ./src:/project
+    - ./home:/home
+    - ./root:/root
+    group_add:
+    - 140
+
