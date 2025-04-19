@@ -867,13 +867,74 @@ void OpenPosition(ENUM_ORDER_TYPE order_type, double lot_size) {
    request.deviation = 10; // Slippage in points
    request.magic = Magic_Number;
    request.comment = Comments;
-   request.type_filling = ORDER_FILLING_FOK;
+   
+   // Get the supported filling modes for this symbol
+   uint filling_mode = (uint)SymbolInfoInteger(Symbol_Name, SYMBOL_FILLING_MODE);
+   
+   // Default to ORDER_FILLING_RETURN if we can't determine the filling mode
+   request.type_filling = ORDER_FILLING_RETURN;
+   
+   // Check supported filling modes
+   if((filling_mode & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK) {
+      request.type_filling = ORDER_FILLING_FOK;
+      Print("Using FOK filling mode for ", Symbol_Name);
+   }
+   else if((filling_mode & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC) {
+      request.type_filling = ORDER_FILLING_IOC;
+      Print("Using IOC filling mode for ", Symbol_Name);
+   }
+   else {
+      Print("Using RETURN filling mode for ", Symbol_Name);
+   }
+   
    request.type_time = ORDER_TIME_GTC;
    
    // Send order
-   if(!OrderSend(request, result)) {
-      Print("Failed to open position. Error: ", GetLastError());
-      return;
+   bool order_success = OrderSend(request, result);
+   
+   // If order fails, try with explicit market execution mode
+   if(!order_success) {
+      int error = GetLastError();
+      Print("Order attempt failed with error: ", error, " (", EnumToString(request.type_filling), " filling mode)");
+      
+      // Try with market execution
+      request.type = (order_type == ORDER_TYPE_BUY) ? ORDER_TYPE_BUY_STOP_LIMIT : ORDER_TYPE_SELL_STOP_LIMIT;
+      request.type_filling = ORDER_FILLING_RETURN;
+      double price_offset = 5 * g_point; // Small offset for limit orders
+      
+      if(order_type == ORDER_TYPE_BUY) {
+         request.stoplimit = request.price - price_offset; // For buy stop limit
+      } else {
+         request.stoplimit = request.price + price_offset; // For sell stop limit
+      }
+      
+      order_success = OrderSend(request, result);
+      
+      if(!order_success) {
+         error = GetLastError();
+         Print("Market execution attempt failed with error: ", error);
+         
+         // Final attempt - try a market order without SL and TP (add them later)
+         request.action = TRADE_ACTION_DEAL;
+         request.type = order_type;
+         request.sl = 0;
+         request.tp = 0;
+         request.stoplimit = 0;
+         order_success = OrderSend(request, result);
+         
+         if(!order_success) {
+            error = GetLastError();
+            Print("Failed to open position after all attempts. Final error: ", error);
+            return;
+         }
+         else {
+            // Now try to add SL/TP in a separate command
+            ulong position_ticket = result.order;
+            if(PositionSelectByTicket(position_ticket)) {
+               ModifyPosition(position_ticket, sl_price, 0);
+            }
+         }
+      }
    }
    
    // Store position ticket
@@ -1185,16 +1246,39 @@ bool ClosePartialPosition(ulong ticket, double volume) {
       request.price = SymbolInfoDouble(request.symbol, SYMBOL_ASK);
    }
    
-   // Send order
+   // Try different filling modes
+   // First try with IOC filling mode which works with most brokers
+   request.type_filling = ORDER_FILLING_IOC;
    bool success = OrderSend(request, result);
    
+   // If first attempt fails, try with FOK
    if(!success) {
-      Print("Failed to partially close position ", ticket, ". Error: ", GetLastError());
-   } else {
-      Print("Partially closed position ", ticket, ". Volume: ", volume);
+      int error = GetLastError();
+      Print("First partial close attempt failed with error: ", error, " (IOC filling mode)");
+      
+      // Try with FOK
+      request.type_filling = ORDER_FILLING_FOK;
+      success = OrderSend(request, result);
+      
+      // If still fails, try with market filling
+      if(!success) {
+         error = GetLastError();
+         Print("Second partial close attempt failed with error: ", error, " (FOK filling mode)");
+         
+         // Last attempt with filling mode = market
+         request.type_filling = ORDER_FILLING_RETURN;
+         success = OrderSend(request, result);
+         
+         if(!success) {
+            error = GetLastError();
+            Print("Failed to partially close position after all attempts. Final error: ", error);
+            return false;
+         }
+      }
    }
    
-   return success;
+   Print("Partially closed position ", ticket, ". Volume: ", volume);
+   return true;
 }
 
 //+------------------------------------------------------------------+
@@ -1224,29 +1308,53 @@ bool ClosePosition(ulong ticket) {
       request.price = SymbolInfoDouble(request.symbol, SYMBOL_ASK);
    }
    
-   // Send order
+   // Try different filling modes
+   // First try with IOC filling mode
+   request.type_filling = ORDER_FILLING_IOC;
    bool success = OrderSend(request, result);
    
+   // If first attempt fails, try with FOK
    if(!success) {
-      Print("Failed to close position ", ticket, ". Error: ", GetLastError());
-   } else {
-      Print("Closed position ", ticket);
+      int error = GetLastError();
+      Print("First close attempt failed with error: ", error, " (IOC filling mode)");
       
-      // Remove from TP trackers
-      for(int i = 0; i < ArraySize(g_tp_trackers); i++) {
-         if(g_tp_trackers[i].ticket == ticket) {
-            // Remove this tracker by shifting elements
-            for(int j = i; j < ArraySize(g_tp_trackers) - 1; j++) {
-               g_tp_trackers[j] = g_tp_trackers[j + 1];
-            }
-            // Resize array
-            ArrayResize(g_tp_trackers, ArraySize(g_tp_trackers) - 1);
-            break;
+      // Try with FOK
+      request.type_filling = ORDER_FILLING_FOK;
+      success = OrderSend(request, result);
+      
+      // If still fails, try with market filling
+      if(!success) {
+         error = GetLastError();
+         Print("Second close attempt failed with error: ", error, " (FOK filling mode)");
+         
+         // Last attempt with filling mode = market
+         request.type_filling = ORDER_FILLING_RETURN;
+         success = OrderSend(request, result);
+         
+         if(!success) {
+            error = GetLastError();
+            Print("Failed to close position after all attempts. Final error: ", error);
+            return false;
          }
       }
    }
    
-   return success;
+   Print("Closed position ", ticket);
+   
+   // Remove from TP trackers
+   for(int i = 0; i < ArraySize(g_tp_trackers); i++) {
+      if(g_tp_trackers[i].ticket == ticket) {
+         // Remove this tracker by shifting elements
+         for(int j = i; j < ArraySize(g_tp_trackers) - 1; j++) {
+            g_tp_trackers[j] = g_tp_trackers[j + 1];
+         }
+         // Resize array
+         ArrayResize(g_tp_trackers, ArraySize(g_tp_trackers) - 1);
+         break;
+      }
+   }
+   
+   return true;
 }
 
 //+------------------------------------------------------------------+
@@ -1779,7 +1887,8 @@ void UpdateChartVisuals() {
    
    // Create or update info panel
    if(ShowInfoPanel) {
-      CreateInfoPanel();
+      // Call the advanced dashboard instead of the basic panel
+      CreateAdvancedDashboard();
    }
    
    // Create or update trade lines
@@ -2128,79 +2237,12 @@ void CreateAdvancedDashboard() {
    int total_trades = winning_trades + losing_trades;
    double win_rate = (total_trades > 0) ? ((double)winning_trades / total_trades) * 100.0 : 0.0;
    double profit_factor = (gross_loss > 0) ? gross_profit / gross_loss : (gross_profit > 0 ? 9999.0 : 0.0);
-   double expectancy = (total_trades > 0) ? ((gross_profit / winning_trades) * win_rate/100.0) - 
-                                          ((gross_loss / losing_trades) * (1.0 - win_rate/100.0)) : 0.0;
-   
-   // Create the dashboard rectangle
-   string dashboard_name = g_panel_name + "_Advanced";
-   int panel_width = 320;
-   int panel_height = 500;
-   int x = 10, y = 10;
-   
-   // Position based on corner setting
-   switch(InfoCorner) {
-      case CORNER_LEFT_UPPER:
-         x = 10;
-         y = 10;
-         break;
-      case CORNER_RIGHT_UPPER:
-         x = (int)(ChartGetInteger(0, CHART_WIDTH_IN_PIXELS)) - panel_width - 10;
-         y = 10;
-         break;
-      case CORNER_LEFT_LOWER:
-         x = 10;
-         y = (int)(ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS)) - panel_height - 10;
-         break;
-      case CORNER_RIGHT_LOWER:
-         x = (int)(ChartGetInteger(0, CHART_WIDTH_IN_PIXELS)) - panel_width - 10;
-         y = (int)(ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS)) - panel_height - 10;
-         break;
+   double expectancy = 0.0;
+   if(total_trades > 0) {
+      if(winning_trades > 0 && losing_trades > 0) {
+         expectancy = ((gross_profit / winning_trades) * win_rate/100.0) - ((gross_loss / losing_trades) * (1.0 - win_rate/100.0));
+      }
    }
-   
-   // Create panel background
-   if(!ObjectCreate(0, dashboard_name, OBJ_RECTANGLE_LABEL, 0, 0, 0)) {
-      Print("Failed to create advanced dashboard.");
-      return;
-   }
-   
-   // Set panel properties
-   ObjectSetInteger(0, dashboard_name, OBJPROP_CORNER, InfoCorner);
-   ObjectSetInteger(0, dashboard_name, OBJPROP_XDISTANCE, x);
-   ObjectSetInteger(0, dashboard_name, OBJPROP_YDISTANCE, y);
-   ObjectSetInteger(0, dashboard_name, OBJPROP_XSIZE, panel_width);
-   ObjectSetInteger(0, dashboard_name, OBJPROP_YSIZE, panel_height);
-   ObjectSetInteger(0, dashboard_name, OBJPROP_BGCOLOR, InfoBackColor);
-   ObjectSetInteger(0, dashboard_name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
-   ObjectSetInteger(0, dashboard_name, OBJPROP_WIDTH, 1);
-   ObjectSetInteger(0, dashboard_name, OBJPROP_BACK, false);
-   ObjectSetInteger(0, dashboard_name, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, dashboard_name, OBJPROP_SELECTED, false);
-   ObjectSetInteger(0, dashboard_name, OBJPROP_HIDDEN, true);
-   ObjectSetInteger(0, dashboard_name, OBJPROP_ZORDER, 0);
-   
-   // Create dashboard content with enhanced formatting
-   string dashboard_text = "";
-   dashboard_text += "\n  ╔══════════════════════════════════╗\n";
-   dashboard_text += "  ║      MoneyMonster EA v1.00       ║\n";
-   dashboard_text += "  ╚══════════════════════════════════╝\n\n";
-   
-   // Account section
-   dashboard_text += "  ■ Account Statistics\n";
-   dashboard_text += "  ├ Balance: " + DoubleToString(account_balance, 2) + "\n";
-   dashboard_text += "  ├ Equity: " + DoubleToString(account_equity, 2) + "\n";
-   dashboard_text += "  ├ Current P/L: " + DoubleToString(current_profit, 2) + "\n";
-   dashboard_text += "  ├ Daily Loss: " + DoubleToString(g_daily_loss, 2) + " / " + 
-                   DoubleToString(account_balance * DailyLossLimit / 100.0, 2) + "\n";
-   dashboard_text += "  └ Loss Limit: " + DoubleToString(DailyLossLimit, 1) + "%\n\n";
-   
-   // Performance metrics
-   dashboard_text += "  ■ Performance Metrics\n";
-   dashboard_text += "  ├ Total Trades: " + IntegerToString(total_trades) + "\n";
-   dashboard_text += "  ├ Win Rate: " + DoubleToString(win_rate, 1) + "%\n";
-   dashboard_text += "  ├ Profit Factor: " + DoubleToString(profit_factor, 2) + "\n";
-   dashboard_text += "  ├ Expectancy: " + DoubleToString(expectancy, 2) + "\n";
-   dashboard_text += "  ├ Gross Profit: " + DoubleToString(gross_profit, 2) + "\n";
-   dashboard_text += "  └ Gross Loss: " + DoubleToString(gross_loss, 2) + "\n\n";
    
    // Position information
    int buy_positions = 0, sell_positions = 0;
@@ -2223,106 +2265,39 @@ void CreateAdvancedDashboard() {
       }
    }
    
-   dashboard_text += "  ■ Open Positions\n";
-   dashboard_text += "  ├ Buy: " + IntegerToString(buy_positions) + " (" + DoubleToString(buy_volume, 2) + " lots)\n";
-   dashboard_text += "  └ Sell: " + IntegerToString(sell_positions) + " (" + DoubleToString(sell_volume, 2) + " lots)\n\n";
+   // Create a simple one-line header at the top of the chart instead of a rectangle panel
+   string header_name = "MoneyMonsterHeader";
+   string header_text = "===== MoneyMonster EA =====Symbol: " + Symbol_Name + 
+                       " Balance: " + DoubleToString(account_balance, 2);
    
-   // Current indicator values
-   dashboard_text += "  ■ Current Indicator Values\n";
+   // Remove old objects
+   ObjectDelete(0, g_panel_name);
+   ObjectDelete(0, g_panel_name + "_Text");
+   ObjectDelete(0, g_panel_name + "_Advanced");
+   ObjectDelete(0, g_panel_name + "_Advanced_Text");
+   ObjectDelete(0, header_name);
    
-   // RSI indicators (if active)
-   if(g_use_rsi) {
-      double rsi_1m = GetIndicatorValue(h_rsi_1m, 0);
-      double rsi_5m = GetIndicatorValue(h_rsi_5m, 0);
-      double rsi_15m = GetIndicatorValue(h_rsi_15m, 0);
-      
-      dashboard_text += "  ├ RSI (1M/5M/15M): " + 
-                  DoubleToString(rsi_1m, 1) + " / " + 
-                  DoubleToString(rsi_5m, 1) + " / " + 
-                  DoubleToString(rsi_15m, 1) + "\n";
-   }
-   
-   // MACD (if active)
-   if(g_use_macd) {
-      double macd_main = GetIndicatorValue(h_macd_5m, 0, 0);
-      double macd_signal = GetIndicatorValue(h_macd_5m, 0, 1);
-      double macd_hist = macd_main - macd_signal;
-      
-      dashboard_text += "  ├ MACD 5M: " + DoubleToString(macd_hist, 5) + 
-                    " (" + (macd_hist > 0 ? "Bullish" : "Bearish") + ")\n";
-   }
-   
-   // ATR (if active)
-   if(g_use_atr) {
-      double atr_5m = GetIndicatorValue(h_atr_5m, 0);
-      dashboard_text += "  ├ ATR 5M: " + DoubleToString(atr_5m, 5) + 
-                    " (" + DoubleToString(atr_5m / (10 * g_point), 1) + " pips)\n";
-   }
-   
-   // ADX (if active)
-   if(g_use_adx) {
-      double adx_15m = GetIndicatorValue(h_adx_15m, 0, 0);
-      double plus_di_15m = GetIndicatorValue(h_adx_15m, 0, 1);
-      double minus_di_15m = GetIndicatorValue(h_adx_15m, 0, 2);
-      
-      string trend_strength = "";
-      if(adx_15m < 20) trend_strength = "Weak";
-      else if(adx_15m < 40) trend_strength = "Moderate";
-      else if(adx_15m < 60) trend_strength = "Strong";
-      else trend_strength = "Very Strong";
-      
-      dashboard_text += "  ├ ADX 15M: " + DoubleToString(adx_15m, 1) + " (" + trend_strength + ")\n";
-      dashboard_text += "  ├ +DI/-DI: " + DoubleToString(plus_di_15m, 1) + "/" + DoubleToString(minus_di_15m, 1) + 
-                    " (" + (plus_di_15m > minus_di_15m ? "Bullish" : "Bearish") + ")\n";
-   }
-   
-   // MA Alignment (if active)
-   if(g_use_ma) {
-      double ma_fast_15m = GetIndicatorValue(h_ma_fast_15m, 0);
-      double ma_medium_15m = GetIndicatorValue(h_ma_medium_15m, 0);
-      double ma_slow_15m = GetIndicatorValue(h_ma_slow_15m, 0);
-      
-      string ma_alignment = "";
-      if(ma_fast_15m > ma_medium_15m && ma_medium_15m > ma_slow_15m)
-         ma_alignment = "Bullish (Fast>Medium>Slow)";
-      else if(ma_fast_15m < ma_medium_15m && ma_medium_15m < ma_slow_15m)
-         ma_alignment = "Bearish (Fast<Medium<Slow)";
-      else
-         ma_alignment = "Mixed";
-      
-      dashboard_text += "  └ MA Alignment 15M: " + ma_alignment + "\n\n";
-   } else {
-      dashboard_text += "  └ Additional indicators...\n\n";
-   }
-   
-   // EA Settings
-   dashboard_text += "  ■ EA Configuration\n";
-   dashboard_text += "  ├ Symbol: " + Symbol_Name + "\n";
-   dashboard_text += "  ├ Risk %: " + DoubleToString(RiskPercent, 2) + "%\n";
-   dashboard_text += "  ├ TP Mode: " + (TP_Mode == TP_PIPS ? "Pips" : "Price") + "\n";
-   dashboard_text += "  └ Magic: " + IntegerToString(Magic_Number) + "\n";
-   
-   // Add dashboard text
-   string text_name = dashboard_name + "_Text";
-   ObjectDelete(0, text_name);
-   
-   if(!ObjectCreate(0, text_name, OBJ_LABEL, 0, 0, 0)) {
-      Print("Failed to create dashboard text.");
+   // Create header text
+   if(!ObjectCreate(0, header_name, OBJ_LABEL, 0, 0, 0)) {
+      Print("Failed to create header text.");
       return;
    }
    
-   // Set text properties
-   ObjectSetInteger(0, text_name, OBJPROP_CORNER, InfoCorner);
-   ObjectSetInteger(0, text_name, OBJPROP_XDISTANCE, x + 10);
-   ObjectSetInteger(0, text_name, OBJPROP_YDISTANCE, y + 10);
-   ObjectSetInteger(0, text_name, OBJPROP_COLOR, InfoTextColor);
-   ObjectSetInteger(0, text_name, OBJPROP_FONTSIZE, InfoFontSize);
-   ObjectSetString(0, text_name, OBJPROP_FONT, "Consolas");
-   ObjectSetString(0, text_name, OBJPROP_TEXT, dashboard_text);
-   ObjectSetInteger(0, text_name, OBJPROP_BACK, false);
-   ObjectSetInteger(0, text_name, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, text_name, OBJPROP_SELECTED, false);
-   ObjectSetInteger(0, text_name, OBJPROP_HIDDEN, true);
+   // Position at top middle of the chart
+   int x_center = (int)(ChartGetInteger(0, CHART_WIDTH_IN_PIXELS) / 2);
+   
+   // Set header properties
+   ObjectSetInteger(0, header_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, header_name, OBJPROP_XDISTANCE, x_center - 200); // center approximately
+   ObjectSetInteger(0, header_name, OBJPROP_YDISTANCE, 20);
+   ObjectSetInteger(0, header_name, OBJPROP_COLOR, InfoTextColor);
+   ObjectSetInteger(0, header_name, OBJPROP_FONTSIZE, InfoFontSize);
+   ObjectSetString(0, header_name, OBJPROP_FONT, "Consolas");
+   ObjectSetString(0, header_name, OBJPROP_TEXT, header_text);
+   ObjectSetInteger(0, header_name, OBJPROP_BACK, false);
+   ObjectSetInteger(0, header_name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, header_name, OBJPROP_SELECTED, false);
+   ObjectSetInteger(0, header_name, OBJPROP_HIDDEN, true);
    
    // Refresh chart
    ChartRedraw(0);
