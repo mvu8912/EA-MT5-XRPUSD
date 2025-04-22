@@ -4,7 +4,7 @@ services:
     image: vscode-novnc
     environment:
       VNC_PASSWORD: mypassword
-      RESOLUTION: 1920x1080
+      RESOLUTION: 1900x1040
       USER: mv
       PASSWORD: mypassword
     ports:
@@ -14,6 +14,7 @@ services:
     - ./src:/project
     - ./home:/home
     - ./root:/root
+    - /home/mv/bin/tidy:/usr/bin/tidy
     group_add:
     - 140
 

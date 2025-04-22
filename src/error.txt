@@ -1,0 +1,4 @@
+2025.04.26 20:47:30.454 2025.01.02 10:45:01   [ManagePositions] Ticket=4 Type=SELL Price=2636.24000 Vol=1.96 TP1=2631.20000 TP1.hit=0 TP2=2628.70000 TP2.hit=0 TP3=2626.20000 TP3.hit=0 TP4=2623.70000 TP4.hit=0 SL=2636.30000
+2025.04.26 20:47:30.454 2025.01.02 10:45:01   failed modify #4 sell 1.96 XAUUSD+ sl: 2643.70, tp: 0.00 -> sl: 2636.29, tp: 0.00 [Invalid stops]
+2025.04.26 20:47:30.454 2025.01.02 10:45:01   CTrade::OrderSend: modify position #4 XAUUSD+ (sl: 2636.29, tp: 0.00) [invalid stops]
+
