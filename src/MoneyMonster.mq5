@@ -64,6 +64,12 @@ input string   VolumeSpikeSection    = "====== Volume Spike Filter ======"; // V
 input bool     UseVolumeSpikeFilter  = true;         // Enable Volume Spike Filter
 input int      VolumeSpikePeriod     = 20;           // Period for average volume calculation
 input double   VolumeSpikeMultiplier = 1.5;          // Required volume multiplier (e.g., 1.5 = 150% of average)
+
+// Trailing Stop Settings
+input string   TrailingStopSection   = "====== Trailing Stop Settings ======"; // Trailing Stop Settings
+input bool     UseTrailingStop       = true;         // Enable Trailing Stop after VTP4
+input double   TrailingStopDistance  = 5.0;          // Trailing Stop Distance (pips)
+
 // Close on Opposite Signal Setting
 input string   OppositeSignalSection = "====== Opposite Signal Settings ======"; // Opposite Signal Settings
 input bool     CloseOnOppositeSignal = true;         // Close trade if opposite signal occurs
@@ -1208,11 +1214,34 @@ void ManagePositions() {
             DebugPrint(StringFormat("[SafetyNet] BUY position %I64u passed midway to TP1 (%.5f). Moving SL to entry+commission: %.5f",
                                      ticket, g_positions[i].midway_tp1, adjusted_sl));
          }
-         // VTP3.5
+         // VTP3.5 (Midway to VTP4)
          if (current_price >= g_positions[i].midway_tp4 && !g_positions[i].midway_hit) {
-            ModifyStopLoss(ticket, g_positions[i].tp3.price, g_positions[i].position_type, g_positions[i].entry_price);
-            g_positions[i].current_sl = g_positions[i].tp3.price;
+            // Calculate midway point between TP3 and TP4 for SL placement
+            double midway_vtp4 = (g_positions[i].tp3.price + g_positions[i].tp4.price) / 2.0;
+            ModifyStopLoss(ticket, midway_vtp4, g_positions[i].position_type, g_positions[i].entry_price);
+            g_positions[i].current_sl = midway_vtp4;
             g_positions[i].midway_hit = true;
+            DebugPrint(StringFormat("[TrailingStop] BUY position %I64u reached VTP3.5. Moving SL to midway VTP4: %.5f",
+                                     ticket, midway_vtp4));
+         }
+         // Trailing Stop Logic for BUY - Activates after VTP3.5 is hit (midway to VTP4)
+         else if (UseTrailingStop && g_positions[i].midway_hit && current_price > g_positions[i].tp3.price) {
+            double pip_value = g_is_forex_pair ? g_point * 10 : g_point;
+            double trailDistance = TrailingStopDistance * pip_value;
+            double newSL = current_price - trailDistance;
+            
+            // Only move SL up, never down (one-direction trailing)
+            if (newSL > g_positions[i].current_sl) {
+               // Make sure we don't set SL too close to current price (broker restrictions)
+               double stopLevelPoints = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+               double stopLevelPrice = stopLevelPoints * g_point;
+               double min_sl = SymbolInfoDouble(_Symbol, SYMBOL_BID) - stopLevelPrice;
+               if (newSL > min_sl) newSL = min_sl;
+               
+               ModifyStopLoss(ticket, newSL, g_positions[i].position_type, g_positions[i].entry_price);
+               g_positions[i].current_sl = newSL;
+               DebugPrint(StringFormat("[TrailingStop] BUY position %I64u trailing SL moved to: %.5f", ticket, newSL));
+            }
          }
          // VTP3
          else if (current_price >= g_positions[i].tp3.price && !g_positions[i].tp3.hit) {
@@ -1244,7 +1273,7 @@ void ManagePositions() {
                ModifyStopLoss(ticket, g_positions[i].vtp1_5, g_positions[i].position_type, g_positions[i].entry_price);
                g_positions[i].current_sl = g_positions[i].vtp1_5;
                DebugPrint(StringFormat("[SL_Management] BUY position %I64u hit TP1. Moving SL to VTP1.5: %.5f",
-                                     ticket, g_positions[i].vtp1_5));
+                          ticket, g_positions[i].vtp1_5));
             }
          }
          // If price falls back to entry after VTP1, close at breakeven
@@ -1293,9 +1322,32 @@ void ManagePositions() {
          }
          // VTP3.5
          if (current_price <= g_positions[i].midway_tp4 && !g_positions[i].midway_hit) {
-            ModifyStopLoss(ticket, g_positions[i].tp3.price, g_positions[i].position_type, g_positions[i].entry_price);
-            g_positions[i].current_sl = g_positions[i].tp3.price;
+            // Calculate midway point between TP3 and TP4 for SL placement
+            double midway_vtp4 = (g_positions[i].tp3.price + g_positions[i].tp4.price) / 2.0;
+            ModifyStopLoss(ticket, midway_vtp4, g_positions[i].position_type, g_positions[i].entry_price);
+            g_positions[i].current_sl = midway_vtp4;
             g_positions[i].midway_hit = true;
+            DebugPrint(StringFormat("[TrailingStop] SELL position %I64u reached VTP3.5. Moving SL to midway VTP4: %.5f",
+                                    ticket, midway_vtp4));
+         }
+         // Trailing Stop Logic for SELL - Activates after VTP3.5 is hit (midway to VTP4)
+         else if (UseTrailingStop && g_positions[i].midway_hit && current_price < g_positions[i].tp3.price) {
+            double pip_value = g_is_forex_pair ? g_point * 10 : g_point;
+            double trailDistance = TrailingStopDistance * pip_value;
+            double newSL = current_price + trailDistance;
+            
+            // Only move SL down, never up (one-direction trailing)
+            if (newSL < g_positions[i].current_sl) {
+               // Make sure we don't set SL too close to current price (broker restrictions)
+               double stopLevelPoints = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+               double stopLevelPrice = stopLevelPoints * g_point;
+               double max_sl = SymbolInfoDouble(_Symbol, SYMBOL_ASK) + stopLevelPrice;
+               if (newSL < max_sl) newSL = max_sl;
+               
+               ModifyStopLoss(ticket, newSL, g_positions[i].position_type, g_positions[i].entry_price);
+               g_positions[i].current_sl = newSL;
+               DebugPrint(StringFormat("[TrailingStop] SELL position %I64u trailing SL moved to: %.5f", ticket, newSL));
+            }
          }
          // VTP3
          else if (current_price <= g_positions[i].tp3.price && !g_positions[i].tp3.hit) {
@@ -1325,9 +1377,8 @@ void ManagePositions() {
                g_positions[i].current_volume -= close_vol;
                // Move SL to VTP1.5 (midway between entry and TP1) instead of entry
                ModifyStopLoss(ticket, g_positions[i].vtp1_5, g_positions[i].position_type, g_positions[i].entry_price);
-               g_positions[i].current_sl= g_positions[i].vtp1_5;
-               DebugPrint(StringFormat("[SL_Management] SELL position %I64u hit TP1. Moving SL to VTP1.5: %.5f",
-                                     ticket, g_positions[i].vtp1_5));
+               g_positions[i].current_sl = g_positions[i].vtp1_5;
+               DebugPrint(StringFormat("[SL_Management] SELL position %I64u hit TP1. Moving SL to VTP1.5: %.5f", ticket, g_positions[i].vtp1_5));
             }
          }
          // If price rises back to entry after VTP1, close at breakeven
