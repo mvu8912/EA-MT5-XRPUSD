@@ -1189,14 +1189,24 @@ void ManagePositions() {
       if (g_positions[i].position_type == POSITION_TYPE_BUY) {
          // TP4
          if (current_price >= g_positions[i].tp4.price) { Trade.PositionClose(ticket); RemovePosition(i); i--; total_positions--; continue; }
-         // Safety net: If price crosses midway to TP1 and hasn't hit TP1 yet, move SL to entry
+         // Safety net: If price crosses midway to TP1 and hasn't hit TP1 yet, move SL to entry + commission
          if (current_price >= g_positions[i].midway_tp1 && !g_positions[i].midway_tp1_hit && !g_positions[i].tp1.hit) {
-            ModifyStopLoss(ticket, g_positions[i].entry_price, g_positions[i].position_type, g_positions[i].entry_price);
-            g_positions[i].current_sl = g_positions[i].entry_price;
+            // Calculate commission-adjusted SL that ensures a small profit
+            double commission_fee = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE) * 8; // Approximate commission as 8 ticks
+            double adjusted_sl = g_positions[i].entry_price + commission_fee;
+            
+            // Make sure we don't set SL too close to current price (broker restrictions)
+            double stopLevelPoints = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+            double stopLevelPrice = stopLevelPoints * g_point;
+            double min_sl = SymbolInfoDouble(_Symbol, SYMBOL_BID) - stopLevelPrice;
+            if (adjusted_sl > min_sl) adjusted_sl = min_sl;
+            
+            ModifyStopLoss(ticket, adjusted_sl, g_positions[i].position_type, g_positions[i].entry_price);
+            g_positions[i].current_sl = adjusted_sl;
             g_positions[i].dynamic_sl_disabled = true; // Disable dynamic SL
             g_positions[i].midway_tp1_hit = true;
-            DebugPrint(StringFormat("[SafetyNet] BUY position %I64u passed midway to TP1 (%.5f). Moving SL to entry: %.5f",
-                                     ticket, g_positions[i].midway_tp1, g_positions[i].entry_price));
+            DebugPrint(StringFormat("[SafetyNet] BUY position %I64u passed midway to TP1 (%.5f). Moving SL to entry+commission: %.5f",
+                                     ticket, g_positions[i].midway_tp1, adjusted_sl));
          }
          // VTP3.5
          if (current_price >= g_positions[i].midway_tp4 && !g_positions[i].midway_hit) {
@@ -1262,14 +1272,24 @@ void ManagePositions() {
       } else if (g_positions[i].position_type == POSITION_TYPE_SELL) {
          // TP4
          if (current_price <= g_positions[i].tp4.price) { Trade.PositionClose(ticket); RemovePosition(i); i--; total_positions--; continue; }
-         // Safety net: If price crosses midway to TP1 and hasn't hit TP1 yet, move SL to entry
+         // Safety net: If price crosses midway to TP1 and hasn't hit TP1 yet, move SL to entry - commission
          if (current_price <= g_positions[i].midway_tp1 && !g_positions[i].midway_tp1_hit && !g_positions[i].tp1.hit) {
-            ModifyStopLoss(ticket, g_positions[i].entry_price, g_positions[i].position_type, g_positions[i].entry_price);
-            g_positions[i].current_sl = g_positions[i].entry_price;
+            // Calculate commission-adjusted SL that ensures a small profit
+            double commission_fee = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE) * 8; // Approximate commission as 8 ticks
+            double adjusted_sl = g_positions[i].entry_price - commission_fee;
+            
+            // Make sure we don't set SL too close to current price (broker restrictions)
+            double stopLevelPoints = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+            double stopLevelPrice = stopLevelPoints * g_point;
+            double max_sl = SymbolInfoDouble(_Symbol, SYMBOL_ASK) + stopLevelPrice;
+            if (adjusted_sl < max_sl) adjusted_sl = max_sl;
+            
+            ModifyStopLoss(ticket, adjusted_sl, g_positions[i].position_type, g_positions[i].entry_price);
+            g_positions[i].current_sl = adjusted_sl;
             g_positions[i].dynamic_sl_disabled = true; // Disable dynamic SL
             g_positions[i].midway_tp1_hit = true;
-            DebugPrint(StringFormat("[SafetyNet] SELL position %I64u passed midway to TP1 (%.5f). Moving SL to entry: %.5f",
-                                     ticket, g_positions[i].midway_tp1, g_positions[i].entry_price));
+            DebugPrint(StringFormat("[SafetyNet] SELL position %I64u passed midway to TP1 (%.5f). Moving SL to entry-commission: %.5f", 
+                                    ticket, g_positions[i].midway_tp1, adjusted_sl));
          }
          // VTP3.5
          if (current_price <= g_positions[i].midway_tp4 && !g_positions[i].midway_hit) {
@@ -1305,7 +1325,7 @@ void ManagePositions() {
                g_positions[i].current_volume -= close_vol;
                // Move SL to VTP1.5 (midway between entry and TP1) instead of entry
                ModifyStopLoss(ticket, g_positions[i].vtp1_5, g_positions[i].position_type, g_positions[i].entry_price);
-               g_positions[i].current_sl = g_positions[i].vtp1_5;
+               g_positions[i].current_sl= g_positions[i].vtp1_5;
                DebugPrint(StringFormat("[SL_Management] SELL position %I64u hit TP1. Moving SL to VTP1.5: %.5f",
                                      ticket, g_positions[i].vtp1_5));
             }
